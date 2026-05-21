@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: c-lexical-analyzer
+    runtime: node
+    buildCommand: |
+      apt-get update && apt-get install -y flex gcc &&
+      bash build.sh &&
+      npm install
+    startCommand: node server.js
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production

@@ -1,0 +1,25 @@
+{
+  "name": "c-lexical-analyzer-backend",
+  "version": "1.0.0",
+  "description": "Backend service for a Web-Based C Lexical Analyzer using Node.js, Express, and Flex",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "bash build.sh",
+    "test": "node test.js"
+  },
+  "keywords": [
+    "lexer",
+    "flex",
+    "c-language",
+    "tokenizer",
+    "compiler"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.0"
+  }
+}
