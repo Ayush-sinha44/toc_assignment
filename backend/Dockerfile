@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     build-essential
 
-WORKDIR /app
+WORKDIR /opt/render/project/src/backend
 
 COPY package*.json ./
 
@@ -13,8 +13,9 @@ RUN npm install
 
 COPY . .
 
-RUN flex lexer.l
-RUN gcc lex.yy.c -o lexer -lfl
+RUN flex lexer.l && \
+    gcc lex.yy.c -o lexer -lfl && \
+    chmod +x lexer
 
 EXPOSE 10000
 
