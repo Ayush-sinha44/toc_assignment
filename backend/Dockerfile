@@ -19,7 +19,6 @@ COPY . .
 # Compile the lexer
 RUN flex lexer.l
 RUN gcc lex.yy.c -o lexer -lfl
-RUN gcc lex.yy.c -o lexer -lfl 2>&1 | tee /tmp/gcc.log && cat /tmp/gcc.log
 RUN chmod +x lexer
 
 # Smoke-test: fail the build immediately if the binary is broken
