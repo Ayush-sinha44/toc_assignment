@@ -9,19 +9,47 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
+// ─── Resolve lexer path ─────────────────────────────────────────────────────
+// In Docker: /app/lexer   |   Locally: <project>/backend/lexer
 const LEXER_PATH = path.join(__dirname, "lexer");
 
-// Verify lexer exists on startup — fail fast
+// Verify lexer exists on startup — fail fast with helpful message
 if (!fs.existsSync(LEXER_PATH)) {
+  console.error("════════════════════════════════════════════════════════");
   console.error(`FATAL: lexer binary not found at ${LEXER_PATH}`);
+  console.error("");
+  console.error("This means the Flex lexer was not compiled.");
+  console.error("Run:  bash build.sh   (or ensure Dockerfile runs it)");
+  console.error("════════════════════════════════════════════════════════");
   process.exit(1);
 }
+console.log(`✓ Lexer binary found at ${LEXER_PATH}`);
+
+// ─── Routes ──────────────────────────────────────────────────────────────────
+
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    message: "C Lexical Analyzer API is running",
+    endpoints: { analyze: "POST /analyze" },
+  });
+});
+
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// ─── POST /analyze ──────────────────────────────────────────────────────────
 
 app.post("/analyze", (req, res) => {
   const { code } = req.body;
 
-  if (!code || typeof code !== "string") {
+  if (!code || typeof code !== "string" || code.trim().length === 0) {
     return res.status(400).json({ error: "Missing or invalid 'code' field" });
+  }
+
+  if (code.length > 100_000) {
+    return res.status(413).json({ error: "Input too large. Maximum 100,000 characters." });
   }
 
   // Guard against double-response
@@ -32,10 +60,15 @@ app.post("/analyze", (req, res) => {
     res.status(statusCode).json(payload);
   };
 
-  const tmpFile = path.join(os.tmpdir(), `input_${Date.now()}_${Math.random().toString(36).slice(2)}.c`);
+  // Unique temp file to avoid race conditions
+  const tmpFile = path.join(
+    os.tmpdir(),
+    `input_${Date.now()}_${Math.random().toString(36).slice(2)}.c`
+  );
 
   fs.writeFile(tmpFile, code, (writeErr) => {
     if (writeErr) {
+      console.error("Failed to write temp file:", writeErr);
       return sendOnce(500, { error: "Failed to write temporary file" });
     }
 
@@ -54,17 +87,28 @@ app.post("/analyze", (req, res) => {
       sendOnce(500, { error: `Failed to start lexer: ${err.message}` });
     });
 
-    lexer.on("close", (code) => {
+    lexer.on("close", (exitCode) => {
       fs.unlink(tmpFile, () => {});
 
-      if (code !== 0) {
-        console.error("Lexer exited with code", code, "stderr:", stderr);
+      if (exitCode !== 0) {
+        console.error("Lexer exited with code", exitCode, "stderr:", stderr);
         return sendOnce(500, { error: "Lexer failed", details: stderr });
       }
 
       try {
         const tokens = parseTokens(stdout);
-        sendOnce(200, { tokens });
+
+        // Build summary statistics
+        const summary = {};
+        for (const token of tokens) {
+          summary[token.type] = (summary[token.type] || 0) + 1;
+        }
+
+        sendOnce(200, {
+          tokens,
+          summary,
+          totalTokens: tokens.length,
+        });
       } catch (parseErr) {
         console.error("Token parse error:", parseErr);
         sendOnce(500, { error: "Failed to parse lexer output" });
@@ -86,24 +130,88 @@ app.post("/analyze", (req, res) => {
   });
 });
 
-// Adjust this to match your actual lexer output format
-function parseTokens(output) {
-  return output
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [type, ...rest] = line.split(/\s+/);
-      return { type, value: rest.join(" ") };
-    });
+// ─── Token Parser ────────────────────────────────────────────────────────────
+// Lexer outputs pipe-delimited lines: TYPE|LEXEME|LINE_NUMBER
+// Lexeme may contain escaped characters: \\, \|, \n, \r, \t
+
+function unescapeLexeme(raw) {
+  let result = "";
+  let i = 0;
+  while (i < raw.length) {
+    if (raw[i] === "\\" && i + 1 < raw.length) {
+      const next = raw[i + 1];
+      switch (next) {
+        case "\\": result += "\\"; i += 2; break;
+        case "|":  result += "|";  i += 2; break;
+        case "n":  result += "\n"; i += 2; break;
+        case "r":  result += "\r"; i += 2; break;
+        case "t":  result += "\t"; i += 2; break;
+        default:   result += raw[i]; i++; break;
+      }
+    } else {
+      result += raw[i];
+      i++;
+    }
+  }
+  return result;
 }
 
+function findUnescapedPipe(str, start) {
+  for (let i = start; i < str.length; i++) {
+    if (str[i] === "|") {
+      let backslashes = 0;
+      let j = i - 1;
+      while (j >= 0 && str[j] === "\\") { backslashes++; j--; }
+      if (backslashes % 2 === 0) return i;
+    }
+  }
+  return -1;
+}
 
-app.get("/", (req, res) => res.send("OK"));
-app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
+function parseTokens(output) {
+  const tokens = [];
+  const lines = output.split("\n").filter((line) => line.trim().length > 0);
+
+  for (const line of lines) {
+    const firstPipe = findUnescapedPipe(line, 0);
+    if (firstPipe === -1) continue;
+
+    const lastPipe = line.lastIndexOf("|");
+    if (lastPipe === -1 || lastPipe === firstPipe) continue;
+
+    const type = line.substring(0, firstPipe);
+    const rawLexeme = line.substring(firstPipe + 1, lastPipe);
+    const lineNumStr = line.substring(lastPipe + 1);
+
+    const lineNum = parseInt(lineNumStr, 10);
+    if (isNaN(lineNum)) continue;
+
+    tokens.push({
+      lexeme: unescapeLexeme(rawLexeme),
+      type: type,
+      line: lineNum,
+    });
+  }
+
+  return tokens;
+}
+
+// ─── 404 + Error Handling ────────────────────────────────────────────────────
+
+app.use((req, res) => {
+  res.status(404).json({ error: `Route ${req.method} ${req.path} not found` });
+});
+
+app.use((err, req, res, _next) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
+// ─── Start Server ────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Lexer path: ${LEXER_PATH}`);
+  console.log(`✓ C Lexical Analyzer API running on port ${PORT}`);
+  console.log(`  Health:   GET  http://localhost:${PORT}/health`);
+  console.log(`  Analyze:  POST http://localhost:${PORT}/analyze`);
 });
