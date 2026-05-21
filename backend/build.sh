@@ -14,7 +14,7 @@ echo "Building C Lexical Analyzer..."
 flex lexer.l
 echo "Generated lex.yy.c"
 
-gcc lex.yy.c -o lexer -lfl
+gcc lex.yy.c -o lexer
 echo "Built ./lexer"
 
 chmod +x lexer
