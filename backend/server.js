@@ -247,7 +247,13 @@ app.post("/analyze", (req, res) => {
     });
 
     // Pipe input file into lexer stdin
-    fs.createReadStream(inputFile).pipe(lexer.stdin);
+    const stream = fs.createReadStream(inputFile);
+
+    stream.on("error", (err) => {
+    console.error("Stream error:", err);
+});
+
+    stream.pipe(lexer.stdin);
   });
 });
 
